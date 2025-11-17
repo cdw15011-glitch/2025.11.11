@@ -1,24 +1,10 @@
-#include "ros/ros.h"
-#include "sensor_msgs/Imu.h"
-#include "morai_msgs/CtrlCmd.h"
-#include "geometry_msgs/PoseStamped.h"
-#include "morai_msgs/EgoVehicleStatus.h"
-//속도 sub
-#include <cmath>
-#include <iostream>
-#include <fstream>
-//파일 입출력 헤더. 파일을 열고(ifstream/ofstream) 읽거나 쓸 때 사용.
-#include <vector>
-//가변 크기 배열 컨테이너. 경로처럼 점(Point)을 여러 개 저장하고 싶을 때 사용.
-#include <string>
-#include <cfloat>   // FLT_MAX사용 위함 
-#include <algorithm> //clamp사용 위함
-using namespace std;
+#include "morai/header.h"
 
 double ego_yaw;
 double ego_x = 0.0;
 double ego_y = 0.0;
 double current_speed = 0.0;
+double steering_angle =0;
 
 
 double quaternion_to_yaw(double x, double y, double z, double w)
@@ -71,48 +57,62 @@ vector<Position_path> read_path(const string& filename) {
     return path;
 }
 
-void stanley_control(ros::Publisher& ctrl_pub, const vector<Position_path>& path)
-{     
-    double dx,dy,dx_ego,dy_ego;
+int find_nearpoint(const vector<Position_path>& path)
+{
     int near_point= 0;
     double min_dist = FLT_MAX;
+    double dx,dy,dist;
 
     for (int i = 0; i < path.size(); i++)
+    {
+        dx = path[i].xx - ego_x;
+        dy = path[i].yy - ego_y;
+        dist = sqrt(dx * dx + dy * dy);
+        if (dist < min_dist)
         {
-            dx = path[i].xx - ego_x;
-            dy = path[i].yy - ego_y;
-            double dist = sqrt(dx * dx + dy * dy);
-            if (dist < min_dist)
-            {
-                min_dist = dist;
-                near_point = i;
-            }
+            min_dist = dist;
+            near_point = i;
         }
+    }  
+    return near_point;
+}
+
+void compute_stanley_control(const vector<Position_path>& path)
+{    
+    double dx,dy,dx_ego,dy_ego;
+
+    int near_point = find_nearpoint(path);
+       
     dx = path[near_point + 1].xx - path[near_point].xx;
     dy = path[near_point + 1].yy - path[near_point].yy;
-    double path_yaw = atan2(dy, dx); //두경로점사이의 기울기방향 , path진행방향 
+    double path_yaw = atan2(dy, dx); //두경로점사이의 기울기방향 , path진행방향
 
     dx_ego = path[near_point].xx - ego_x;
     dy_ego = path[near_point].yy - ego_y;
-    double error_dist = -sin(path_yaw) * dx_ego + cos(path_yaw) * dy_ego;  ;//경로의 점과 차량 사이의 측면거리(가로방향) 오차 
-
-    double delta = ego_yaw-path_yaw;
-    if (delta > M_PI){delta -= 2 * M_PI;}
-    if (delta < -M_PI){delta += 2 * M_PI;}
-
+    double error_dist = -sin(path_yaw) * dx_ego + cos(path_yaw) * dy_ego;  ;//경로의 점과 차량 사이의 측면거리(가로방향) 오차
+   
+    double delta = path_yaw - ego_yaw;
+    while (delta > M_PI){delta -= 2 * M_PI;}
+    while (delta < -M_PI){delta += 2 * M_PI;}
+    //핸들의 튐을 방지
+   
     if (current_speed==0){current_speed=0.1;}
+    steering_angle = delta + atan2(1 * error_dist , current_speed);     ///조향각 - currentspeed 사용
 
-    double steering_angle = delta + atan2(0.8 * error_dist , current_speed);     ///조향각 - currentspeed 사용 
+    cout   << "Speed: " << current_speed << endl
+            <<"steering_angle: " << steering_angle<< endl
+            <<"error_dist: "<<error_dist<<endl<<endl;
+}
 
+void publish_ctrlcmd(ros::Publisher& ctrl_pub)
+{
     morai_msgs::CtrlCmd cmd;
     cmd.longlCmdType = 2;
     cmd.steering = steering_angle; //조향각
-    cmd.velocity = 20; //차량의 목표 속도.
+    cmd.velocity = 20.0; //차량의 목표 속도.
     cmd.accel = 0.0; //가속도
     cmd.brake = 0.0;
     ctrl_pub.publish(cmd);        
-    cout << "Speed: " << current_speed << endl
-          <<"steering_angle: " << steering_angle<< endl;
 }
 
 int main(int argc, char **argv)
@@ -126,15 +126,15 @@ int main(int argc, char **argv)
 
     ros::Publisher ctrl_pub = nh.advertise<morai_msgs::CtrlCmd>("/ctrl_cmd", 1);
 
-    vector<Position_path> path = read_path("/home/autonav/cyg_ws/src/2025.11.06/path.txt");
+    vector<Position_path> path = read_path("/home/autonav/cyg_ws/src/morai/path.txt");
 
-    ros::Rate rate(1000);
+    ros::Rate rate(50);
     while(ros::ok())
     {
         ros::spinOnce();
-        stanley_control(ctrl_pub, path);
+        compute_stanley_control(path);
+        publish_ctrlcmd(ctrl_pub);
         rate.sleep();
     }
     return 0;
-       
 }

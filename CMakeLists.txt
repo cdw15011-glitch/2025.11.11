@@ -119,7 +119,7 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-# include
+ include
   ${catkin_INCLUDE_DIRS}
 ${GeographicLib_INCLUDE_DIRS}
 )
@@ -146,6 +146,9 @@ target_link_libraries(purepursit2 ${catkin_LIBRARIES})
 
 add_executable(stanley src/stanley.cpp)
 target_link_libraries(stanley ${catkin_LIBRARIES})
+
+add_executable(stanley_purpursuit src/stanley_purpursuit.cpp)
+target_link_libraries(stanley_purpursuit ${catkin_LIBRARIES})
 
 install(FILES path.txt
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
