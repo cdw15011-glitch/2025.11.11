@@ -5,19 +5,15 @@ double ego_x = 0.0;
 double ego_y = 0.0;
 const double L = 3.01;
 double current_speed = 0.0;
-int near_point= 0;
-
-
+double steering_angle = 0.0;
 
 double quaternion_to_yaw(double x, double y, double z, double w)
 {
     double siny_cosp = 2.0 * (w * z + x * y);
-    //sin(ψ) * cos(θ)
     double cosy_cosp = 1.0 - 2.0 * (y * y + z * z);
-    //cos(ψ) * cos(θ)
     return atan2(siny_cosp, cosy_cosp);
-    //ψ = atan2(sinψ*cosθ, cosψ*cosθ) = atan2(sinψ, cosψ) =yaw(ψ)
 }
+
 void callback_yaw(const sensor_msgs::Imu::ConstPtr& msg)
 {
     ego_yaw  = quaternion_to_yaw(
@@ -26,17 +22,17 @@ void callback_yaw(const sensor_msgs::Imu::ConstPtr& msg)
         msg->orientation.z,
         msg->orientation.w
     );
- }
- //ego_yaw에 yaw값 저장
+}
 
-void callback_enu(const  geometry_msgs::PoseStamped::ConstPtr& msg)
+void callback_enu(const geometry_msgs::PoseStamped::ConstPtr& msg)
 {
     ego_x = msg->pose.position.x;
     ego_y = msg->pose.position.y;
 }
+
 void callback_velocity(const morai_msgs::EgoVehicleStatus::ConstPtr& msg)
 {
-    current_speed = msg->velocity.x;  // 단위: m/s
+    current_speed = msg->velocity.x;  // 단위: m/s (사용중인 시뮬/환경에 따라 단위 확인)
 }
 
 struct Position_path {
@@ -44,7 +40,6 @@ struct Position_path {
     double yy;
     double zz;
 };
-//경로의 한 점을 저장
 
 vector<Position_path> read_path(const string& filename) {
     vector<Position_path> path;
@@ -54,110 +49,111 @@ vector<Position_path> read_path(const string& filename) {
     while (file >> x1 >> y1 >> z1) {
         path.push_back({x1, y1, z1});
     }
-
     file.close();
     return path;
 }
 
-double get_look_ahead(double speed) //함수가 이름이 안좋음 getlookahead>>동사로 
+double get_look_ahead(double speed)
 {
-    // 속도에 비례해서 증가
-    double min_lookahead = 1;   // 최소 전방주시거리
-    double max_lookahead = 5; // 최대 전방주시거리
-    double lookahead = speed * 0.8 + min_lookahead;  // 적당한 비례값
-    
-    lookahead = clamp(lookahead, min_lookahead, max_lookahead);// 범위를 제한 
-    //if (lookahead > max_lookahead) {lookahead = max_lookahead;} 
-    //if (lookahead < min_lookahead) {lookahead = min_lookahead;}
+    double min_lookahead = 1.0;   // 최소 전방주시거리 (m)
+    double max_lookahead = 5.0;   // 최대 전방주시거리 (m)
+    double lookahead = speed * 0.5 + min_lookahead;  // 속도 기반 비례
+    lookahead = clamp(lookahead, min_lookahead, max_lookahead);
     return lookahead;
 }
 
 int find_nearpoint(const vector<Position_path>& path)
 {
-   
+    int near_point = 0;
     double min_dist = FLT_MAX;
-    double dx,dy,dist;
-    static int remember_point =0;
-    //static으로 선언된 지역 변수는 함수가 끝나도 메모리에 남아 다음 함수 호출 때 같은 값을 유지함.
 
-    for (int i = remember_point; i < path.size(); i++)
-    { 
-        dx = path[i].xx - ego_x;
-        dy = path[i].yy - ego_y;
-        dist = sqrt(dx * dx + dy * dy);
-        if (dist < min_dist)
-        {
+    for (int i = 0 ; i < path.size(); i++)
+    {
+        double dx = path[i].xx - ego_x;
+        double dy = path[i].yy - ego_y;
+        double dist = sqrt(dx*dx + dy*dy);
+
+        if (dist < min_dist) {
             min_dist = dist;
             near_point = i;
-
         }
-    }  
-    remember_point =near_point;
+    }
     return near_point;
 }
 
 int find_target_point(const vector<Position_path>& path, int near_point, double lookahead_distance)
-{   
-    double dx,dy,dist;
+{
     int target_point = near_point;
-
-    for (int i = near_point; i < path.size(); i++)
+    for (int i = near_point; i < (int)path.size(); i++)
     {
-        dx = path[i].xx - ego_x;
-        dy = path[i].yy - ego_y;
-        dist = sqrt(dx * dx + dy * dy);
+        double dx = path[i].xx - ego_x;
+        double dy = path[i].yy - ego_y;
+        double dist = sqrt(dx * dx + dy * dy);
         if (dist > lookahead_distance)
         {
-            target_point =i;
+            target_point = i;
             break;
         }
     }
     return target_point;
 }
+/*
+//sensitivity: 조향각에 대한 민감도 (값이 클수록 작은 조향각에도 속도 많이 떨어짐)
+double control_speed(double steering_angle)
+{
+    double straight_speed = 30.0;    // 직선 목표 속도 (기본값). (예: 30 -> 사용중인 단위에 맞춰 조절)
+    double min_curve_speed = 10.0;    // 코너에서의 최소 속도 (기본값)
+    double sensitivity = 5.0;       // 조향 민감도 (권장 15~35 범위에서 튜닝)
 
+    double abs_steering_angle = fabs(steering_angle);
 
-double compute_purepursuit_control(const vector<Position_path>& path)
-{   
-    Position_path target;
+    // 단순 비례 감소식 (조향각이 커질수록 분모가 커져 속도 감소)
+    double scale = 1.0 / (1.0 + abs_steering_angle * sensitivity);
 
+    double target_speed = straight_speed * scale;
+
+    if (target_speed < min_curve_speed)
+    {
+        target_speed = min_curve_speed;
+    }
+
+    return target_speed;
+}*/
+
+void compute_purepursuit_control(const vector<Position_path>& path)
+{
     double lookahead_distance = get_look_ahead(current_speed);
-        
+
     int near_point = find_nearpoint(path);
-    int target_point = find_target_point(path, near_point,lookahead_distance);
-    target = path[target_point];
-       
-    double x = target.xx - ego_x;
-    double y = target.yy - ego_y;
+    int target_point = find_target_point(path, near_point, lookahead_distance);
 
-    double target_angle = atan2(y, x); //목표점 방향 각도, 목표점이 있는 절대방향
-    //atan2(y, x)는 원점에서 벡터 (x, y)가 가리키는 절대 방향 각도(radians)를 사분면을 고려해 정확하게 반환하는 함수
-    //atan(y/x)는 사분면 정보 상실(부호만으로는 어느 쪽 사분면인지 모름)과 x=0에서 0으로 나누기 오류 가능성
+    double x = path[target_point].xx - ego_x;
+    double y = path[target_point].yy - ego_y;
 
-    double alpha = target_angle - ego_yaw; //목표점의 각도 - 차량의 진행방향사이의 각도차  
-    while (alpha > M_PI){alpha -= 2 * M_PI;}
-    while (alpha < -M_PI){alpha += 2 * M_PI;}
-    //핸들의 튐을 방지
+    double target_angle = atan2(y, x);
 
-    double steering_angle = atan2(2.0 * L * sin(alpha), lookahead_distance); //조향각
+    double alpha = target_angle - ego_yaw;
+    while (alpha > M_PI) alpha -= 2 * M_PI;
+    while (alpha < -M_PI) alpha += 2 * M_PI;
 
-    cout << "Speed: " << current_speed << " \n "
-          <<"lookahead_distance: " << lookahead_distance<< endl
-          <<"steering_angle: "<< steering_angle<<endl<<endl;
+    steering_angle = atan2(2.0 * L * sin(alpha), lookahead_distance);
 
-    return steering_angle;
+    cout << "Current speed (sensor): " << current_speed << " \n"
+         << "lookahead_distance: " << lookahead_distance << " \n"
+         << "steering_angle: " << steering_angle << "\n\n";
 }
 
-void publish_ctrlcmd(ros::Publisher& ctrl_pub, const vector<Position_path>& path)
+void publish_ctrlcmd(ros::Publisher& ctrl_pub)
 {
-    double steering_angle = compute_purepursuit_control(path);
-
     morai_msgs::CtrlCmd cmd;
     cmd.longlCmdType = 2;
-    cmd.steering = steering_angle; //조향각
-    cmd.velocity = 20.0; //차량의 목표 속도.
-    cmd.accel = 0.0; //가속도
+    cmd.steering = steering_angle;
+    // 여기서 속도를 control_speed로 결정
+    // cmd.velocity = control_speed(steering_angle);
+    cmd.velocity = 20;
+    cmd.accel = 0.0;
     cmd.brake = 0.0;
-    ctrl_pub.publish(cmd);        
+    ctrl_pub.publish(cmd);
 }
 
 int main(int argc, char **argv)
@@ -171,36 +167,15 @@ int main(int argc, char **argv)
 
     ros::Publisher ctrl_pub = nh.advertise<morai_msgs::CtrlCmd>("/ctrl_cmd", 1);
 
-    vector<Position_path> path = read_path("/home/autonav/cyg_ws/src/2025.11.06/path.txt");
+    vector<Position_path> path = read_path("/home/autonav/cyg_ws/src/morai/path.txt");
 
-   
-    ros::Rate rate(50);//최대 50hz
+    ros::Rate rate(50); // 50 Hz
     while(ros::ok())
     {
         ros::spinOnce();
-        publish_ctrlcmd(ctrl_pub, path);
+        compute_purepursuit_control(path);
+        publish_ctrlcmd(ctrl_pub);
         rate.sleep();
     }
     return 0;
-   
 }
-
-//stanley기반으로 대회를 나감 (엄청 발달된 STANLEY)
-//stanley 의 흔들거림을 어떻게 해걀할것인가?>> STANLEY는 어쩔수 없이 흔들거림이 발생함 
-//이는 stANLEY와 흔들림없는 PUREPURSIT의 장점을 합쳐서 만드는 것을 아이디어만 구상해와라!
-//k계수 동적으로!>>아마두 다다음주 과제 
-//곡률을 계산하는 공식이 있음 
-//FOR문을 I로 계산하는 공식은 다르게 만들기 >> 비효율일수도 있음 point가 많으면 비효울적임 
-
-//멈추게 하는것은 ctrltype이 1으로 해야함!!
-//stanley 완성해오기 
-//타입을 잘 생각해보기 double?int?
-//전역이 많아지면 다른 변수에도 연향이 가기에 가능하면 지역변수마니쓰기 
-//변수명 의미있게 작성
-// 함수명도 의미있게 작성!!
-//stop할때는 index에서의 값을 통해 속도를 줄ㅇ기. (마지막점 근처에서 속도줄이게하기) 
-//1함수 1기능 
-//is it true >> is_find_first_waypoint(이런식으로 점찾기는 is로 시작)
-//디버깅을 위한 한줄을 주석으로 만들엇을떄의 실행을 가능하게 >> 즉 매개변수로 했을떄의 오류가 없도록, 매개변수는 꼐산값이 들어가지않게! 
-//FLT_MaX(내부 아주큰 쓰레기 값)
-//함수이름은 동사를 넣어라(약속)

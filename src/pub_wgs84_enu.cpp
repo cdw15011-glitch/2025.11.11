@@ -64,8 +64,7 @@ void callback(const morai_msgs::GPSMessage::ConstPtr& msg)
 	//계산한 ENU 좌표(east, north, up)를
 	//메시지의 위치 부분(pose.position)에 차례로 넣음
 	enu_pub.publish(enu_pose);
-	// .publish()를 하면, 지금 만든 enu_pose 메시지가
-	// ROS 시스템 전체에 발송.
+	// .publish()를 하면, 지금 만든 enu_pose 메시지가 ROS 시스템 전체에 발송.
 	// 다른 노드가 /enu_pose를 구독(subscribe)하고 있으면
 	// → 그 노드가 이 좌표 데이터를 즉시 받게 됨.
 }

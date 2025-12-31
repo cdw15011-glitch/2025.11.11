@@ -1,7 +1,6 @@
 //enu>>ned
 //euler 사용
 
-
 #include "ros/ros.h"
 #include "morai_msgs/GPSMessage.h"
 #include "GeographicLib/UTMUPS.hpp" //시스템 패키지, 좌표변환 도구
