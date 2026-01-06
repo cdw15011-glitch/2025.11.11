@@ -87,12 +87,15 @@ int find_nearpoint(const vector<Position_path>& path)
     double dx,dy,dist;
     static int last_near_point = 0;
     int near_point= last_near_point;
-    double min_dist = FLT_MAX;
+    double min_dist = DBL_MAX;
+
+    int start = max(0, last_near_point - 10);
+    int end   = min((int)path.size() - 1, last_near_point + 30);
     
     double front_x = ego_x + L * cos(ego_yaw);  
     double front_y = ego_y + L * sin(ego_yaw);
 
-    for (int i = last_near_point; i < path.size(); i++)
+    for (int i = start; i < end; i++)
     {
         dx = path[i].xx - front_x;
         dy = path[i].yy - front_y;

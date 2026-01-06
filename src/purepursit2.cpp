@@ -3,7 +3,7 @@
 double ego_yaw;
 double ego_x = 0.0;
 double ego_y = 0.0;
-const double L = 3.01;
+const double L = 3.0;
 double current_speed = 0.0;
 double steering_angle = 0.0;
 
@@ -62,22 +62,52 @@ double get_look_ahead(double speed)
     return lookahead;
 }
 
+// int find_nearpoint(const vector<Position_path>& path)
+// {
+//     int near_point = 0;
+//     double min_dist = FLT_MAX;
+
+//     for (int i = 0 ; i < path.size(); i++)
+//     {
+//         double dx = path[i].xx - ego_x;
+//         double dy = path[i].yy - ego_y;
+//         double dist = sqrt(dx*dx + dy*dy);
+
+//         if (dist < min_dist) {
+//             min_dist = dist;
+//             near_point = i;
+//         }
+//     }
+//     return near_point;
+// }
+
+// // }
 int find_nearpoint(const vector<Position_path>& path)
 {
-    int near_point = 0;
-    double min_dist = FLT_MAX;
+    double dx,dy,dist;
+    static int last_near_point = 0;
+    int near_point= last_near_point;
+    double min_dist = DBL_MAX;
 
-    for (int i = 0 ; i < path.size(); i++)
+    int start = max(0, last_near_point - 10);
+    int end   = min((int)path.size() - 1, last_near_point + 30);
+    
+    double front_x = ego_x + L * cos(ego_yaw);  
+    double front_y = ego_y + L * sin(ego_yaw);
+
+    for (int i = start; i < end; i++)
     {
-        double dx = path[i].xx - ego_x;
-        double dy = path[i].yy - ego_y;
-        double dist = sqrt(dx*dx + dy*dy);
+        dx = path[i].xx - front_x;
+        dy = path[i].yy - front_y;
+        dist = sqrt(dx * dx + dy * dy);
 
-        if (dist < min_dist) {
+        if (dist < min_dist)
+        {
             min_dist = dist;
             near_point = i;
         }
-    }
+    }  
+    last_near_point = near_point;
     return near_point;
 }
 
@@ -97,28 +127,6 @@ int find_target_point(const vector<Position_path>& path, int near_point, double 
     }
     return target_point;
 }
-/*
-//sensitivity: 조향각에 대한 민감도 (값이 클수록 작은 조향각에도 속도 많이 떨어짐)
-double control_speed(double steering_angle)
-{
-    double straight_speed = 30.0;    // 직선 목표 속도 (기본값). (예: 30 -> 사용중인 단위에 맞춰 조절)
-    double min_curve_speed = 10.0;    // 코너에서의 최소 속도 (기본값)
-    double sensitivity = 5.0;       // 조향 민감도 (권장 15~35 범위에서 튜닝)
-
-    double abs_steering_angle = fabs(steering_angle);
-
-    // 단순 비례 감소식 (조향각이 커질수록 분모가 커져 속도 감소)
-    double scale = 1.0 / (1.0 + abs_steering_angle * sensitivity);
-
-    double target_speed = straight_speed * scale;
-
-    if (target_speed < min_curve_speed)
-    {
-        target_speed = min_curve_speed;
-    }
-
-    return target_speed;
-}*/
 
 void compute_purepursuit_control(const vector<Position_path>& path)
 {

@@ -11,7 +11,7 @@ double ego_x= 0.0;
 double ego_y = 0.0;
 double current_speed = 0.0;
 double steering_angle = 0.0;
-const double L = 2.9;  // 차량 휠베이스
+const double L = 3.0;  // 차량 휠베이스
 const float w = 0.7;
 const float target_speed = 60;
 double accel = 0.0;
@@ -23,6 +23,7 @@ struct Position_path {
     double xx;
     double yy;
     double zz;
+    double curvature;
 };
 
 double quaternion_to_yaw(double x, double y, double z, double w)
@@ -59,16 +60,10 @@ vector<Position_path> read_path(const string& filename)
     ifstream file(filename);
     double x, y, z;
     while (file >> x >> y >> z)
-        path.push_back({x, y, z});
+        path.push_back({x, y, z,0.0});
     return path;
 }
 
-struct PIDController
-{
-    double kp;
-    double kd;
-    double prev_error = 0.0;
-};
 double get_look_ahead(double speed)
 {
     double min_lookahead = 1.0;
@@ -77,17 +72,44 @@ double get_look_ahead(double speed)
     return clamp(lookahead, min_lookahead, max_lookahead);
 }
 
+// int find_nearpoint(const vector<Position_path>& path)
+// {
+//     double dx,dy,dist;
+//     int near_point= 0;
+//     double min_dist = DBL_MAX; //DBL_MAX는 double타입의 최댓값, FLT_MAX = float 타입의 최대값
+   
+//     double front_x = ego_x + L * cos(ego_yaw);  
+//     double front_y = ego_y + L * sin(ego_yaw);
+
+//     for (int i = 0; i < path.size(); i++)
+//     {
+//         dx = path[i].xx - front_x;
+//         dy = path[i].yy - front_y;
+//         dist = sqrt(dx * dx + dy * dy);
+
+//         if (dist < min_dist)
+//         {
+//             min_dist = dist;
+//             near_point = i;
+//         }
+//     }  
+//     return near_point;
+// }
+
 int find_nearpoint(const vector<Position_path>& path)
 {
     double dx,dy,dist;
     static int last_near_point = 0;
     int near_point= last_near_point;
-    double min_dist = DBL_MAX; //DBL_MAX는 double타입의 최댓값, FLT_MAX = float 타입의 최대값
+    double min_dist = DBL_MAX;
+
+    int start = max(0, last_near_point - 10);
+    int end   = min((int)path.size() - 1, last_near_point + 30);
     
     double front_x = ego_x + L * cos(ego_yaw);  
     double front_y = ego_y + L * sin(ego_yaw);
 
-    for (int i = last_near_point; i < path.size(); i++)
+    for (int i = start; i <= end; i++)
     {
         dx = path[i].xx - front_x;
         dy = path[i].yy - front_y;
@@ -104,12 +126,14 @@ int find_nearpoint(const vector<Position_path>& path)
 }
 
 int find_ld_point(const vector<Position_path>& path, int near_point, double ld) //stanley에 ld 적용 >> ld와 가까운 거리에 있는 point 위치  
-{
+{   
     double front_x = ego_x + L * cos(ego_yaw);  
     double front_y = ego_y + L * sin(ego_yaw);
 
     int ld_point = near_point;
-    double min_dist = DBL_MAX;
+
+    if (near_point >= path.size() - 2)return path.size() - 2;
+
 
     for (int i = near_point; i < path.size(); i++)
     {
@@ -128,8 +152,6 @@ int find_ld_point(const vector<Position_path>& path, int near_point, double ld) 
 
 double compute_stanley_ld(const vector<Position_path>& path, int ld_point)
 {
-    if (ld_point + 1 >= path.size()) return 0.0;
-
     double front_x = ego_x + L * cos(ego_yaw);
     double front_y = ego_y + L * sin(ego_yaw);
 
@@ -163,13 +185,14 @@ void compute_stanley_control(const vector<Position_path>& path)
     steering_angle = compute_stanley_ld(path, ld_point);
 
     cout << " Speed: " << current_speed<< endl
-         << " lookahead: "<<lookahead_distance<<endl
-         << " Steering: " << steering_angle<< endl<< endl;
+          << " lookahead: "<<lookahead_distance<<endl
+          << " near_point : " << near_point<<endl
+          << " Steering: " << steering_angle<< endl<< endl;
 }
 
 void compute_pid(double current_speed,double target_speed,double& accel, double& brake){
 
-    static double prev_error = 0.0;     
+    static double prev_error = 0.0;    
     double error = target_speed - current_speed;
 
     double p_error = Kp*error;
@@ -181,13 +204,56 @@ void compute_pid(double current_speed,double target_speed,double& accel, double&
     if (pid_speed > 0) {
         accel = min(pid_speed, 1.0); //min(a, b)는 a와 b 중에서 작은 값을 반환.
         brake = 0.0;
-    } 
+    }
     else {
         accel = 0.0;
-        brake = min(-pid_speed, 1.0); 
+        brake = min(-pid_speed, 1.0);
     }
-
 }
+
+void compute_curvature(vector<Position_path>& path)
+{
+    for(int i =0; i<path.size()-2; i++)
+{
+    double dx1 = path[i+1].xx - path[i].xx;
+    double dy1 = path[i+1].yy - path[i].yy;
+    double dx2 = path[i+2].xx - path[i+1].xx;
+    double dy2 = path[i+2].yy - path[i+1].yy;
+
+    double yaw1 = atan2(dy1, dx1);
+    double yaw2 = atan2(dy2, dx2);
+
+    double k = fabs(yaw2 - yaw1);
+    if (k > M_PI) k = 2*M_PI - k;
+    path[i+1].curvature = k;    
+}
+    path[0].curvature = path[1].curvature;
+    
+    path.back().curvature = path[path.size()-2].curvature;
+}
+
+bool publish_stop_ctrlcmd(const vector<Position_path>& path, ros::Publisher& ctrl_pub) {
+    if (path.empty()) return false;
+    double dx = path.back().xx - ego_x;
+    double dy = path.back().yy - ego_y;
+    double dist = sqrt(dx*dx + dy*dy);
+    cout<< "stop point = "<< dist<<endl;
+
+    if (dist < 1.0) {
+        morai_msgs::CtrlCmd stop_cmd;
+        stop_cmd.longlCmdType = 1;
+        stop_cmd.velocity = 0.0;
+        stop_cmd.steering = 0.0;
+        stop_cmd.accel = 0.0;
+        stop_cmd.brake = 1.0;
+        ctrl_pub.publish(stop_cmd);
+        cout << "Reached goal.";
+        ros::shutdown();
+        return true;
+    }
+    return false;
+}
+
 void publish_ctrlcmd(ros::Publisher& ctrl_pub)
 {
     morai_msgs::CtrlCmd cmd;
@@ -211,36 +277,20 @@ int main(int argc, char **argv)
 
     vector<Position_path> path = read_path("/home/autonav/cyg_ws/src/morai/path.txt");
 
+    compute_curvature(path);
+
     ros::Rate rate(50);
     while (ros::ok())
     {
         ros::spinOnce();
         compute_stanley_control(path);
-        compute_pid(current_speed,target_speed,accel,brake);
+        // compute_pid(current_speed,target_speed,accel,brake);
+        publish_stop_ctrlcmd(path, ctrl_pub);
         publish_ctrlcmd(ctrl_pub);
         rate.sleep();
     }
     return 0;
 }
-
-
-// int find_nearpoint(const vector<Position_path>& path)
-// {
-//     int near_point = 0;
-//     double min_dist = FLT_MAX;
-//     for (int i = 0; i < path.size(); i++)
-//     {
-//         double dx = path[i].xx - ego_x;
-//         double dy = path[i].yy - ego_y;
-//         double dist = sqrt(dx*dx + dy*dy);
-//         if (dist < min_dist)
-//         {
-//             min_dist = dist;
-//             near_point = i;
-//         }
-//     }
-//     return near_point;
-// }
 
 // double compute_curvature(const vector<Position_path>& path, int near_point)
 // {
@@ -262,61 +312,4 @@ int main(int argc, char **argv)
 //     //2>>4로 변경하는것이 일반적(값의 증폭,민감도향상을 위해서)
 // }
 
-// double compute_stanley_control(const vector<Position_path>& path, int near_point)
-// {
-//     if (near_point + 1 >= path.size()) return 0.0;
 
-//     double dx,dy,dx_ego,dy_ego;
-
-//     double front_x = ego_x + L * cos(ego_yaw);  
-//     double front_y = ego_y + L * sin(ego_yaw);
-
-//     dx = path[near_point+1].xx - path[near_point].xx;
-//     dy = path[near_point+1].yy - path[near_point].yy;
-//     double path_yaw = atan2(dy, dx); //두경로점사이의 기울기방향 , path진행방향
-
-//     dx_ego = path[near_point].xx - front_x;
-//     dy_ego = path[near_point].yy - front_y;
-//     double error_dist = -sin(path_yaw) * dx_ego + cos(path_yaw) * dy_ego;  ;//경로의 점과 차량 사이의 측면거리(가로방향) 오차
-
-//     double delta = path_yaw - ego_yaw;
-//     while (delta > M_PI){delta -= 2 * M_PI;}
-//     while (delta < -M_PI){delta += 2 * M_PI;}
-
-//     if (current_speed < 0.1) current_speed = 0.1;
-
-//     float k =2.0;
-//     return delta + atan2(k * error_dist , current_speed);     ///조향각 - currentspeed 사용
-// }
-
-// double compute_purepursuit_control(const vector<Position_path>& path, int target_point, double lookahead_distance)
-// {
-//     double dx = path[target_point].xx - ego_x;
-//     double dy = path[target_point].yy - ego_y;
-//     double target_angle = atan2(dy, dx);
-
-//     double alpha = target_angle - ego_yaw;
-//     while (alpha > M_PI) alpha -= 2*M_PI;
-//     while (alpha < -M_PI) alpha += 2*M_PI;
-
-//     return atan2(2.0 * L * sin(alpha), lookahead_distance);
-// }
-
-
-// double compute_curvature(const vector<Position_path>& path, int ld_point)
-// {
-//     if (ld_point + 2 >= path.size()) return 0.0;
-
-//     double dx1 = path[ld_point+1].xx - path[ld_point].xx;
-//     double dy1 = path[ld_point+1].yy - path[ld_point].yy;
-//     double dx2 = path[ld_point+2].xx - path[ld_point+1].xx;
-//     double dy2 = path[ld_point+2].yy - path[ld_point+1].yy;
-
-//     double yaw1 = atan2(dy1, dx1);
-//     double yaw2 = atan2(dy2, dx2);
-
-//     double k = fabs(yaw2 - yaw1);
-//     if (k > M_PI) k = 2*M_PI - k;
-
-//     return k;
-// }
