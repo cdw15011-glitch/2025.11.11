@@ -1,23 +1,25 @@
 //센서를 후륜축에! >> stanley를 기반으로 하기에 double front_x = ego_x + L * cos(ego_yaw);  
 //                                             double front_y = ego_y + L * sin(ego_yaw);
-
-
 #include "morai/header.h"
 
-using namespace std;
-
+//고정
 double ego_yaw;
 double ego_x= 0.0;
 double ego_y = 0.0;
 double current_speed = 0.0;
 double steering_angle = 0.0;
-const double L = 3.0;  // 차량 휠베이스
-const float w = 0.7;
-const float target_speed = 60;
 double accel = 0.0;
 double brake = 0.0;
-double Kp = 0.5;  
-double Kd = 0.1;
+const double L = 3.0;  // 차량 휠베이스
+double max_curvature = 0.0;
+
+//튜닝값
+double Kp = 0.15;  
+double Kd = 0.05;
+const double target_speed =60/3.6;
+const double min_speed = 15/3.6;
+float curve_standard = 0.03;
+float ld = 0.35;
 
 struct Position_path {
     double xx;
@@ -64,37 +66,17 @@ vector<Position_path> read_path(const string& filename)
     return path;
 }
 
+//------------------------------------------------------------//
+//----------------stanley,lookahead-----------------------//
+//------------------------------------------------------------//
+
 double get_look_ahead(double speed)
 {
     double min_lookahead = 1.0;
     double max_lookahead = 10.0;
-    double lookahead = speed * 0.8 + min_lookahead;
+    double lookahead = speed * ld + min_lookahead;
     return clamp(lookahead, min_lookahead, max_lookahead);
 }
-
-// int find_nearpoint(const vector<Position_path>& path)
-// {
-//     double dx,dy,dist;
-//     int near_point= 0;
-//     double min_dist = DBL_MAX; //DBL_MAX는 double타입의 최댓값, FLT_MAX = float 타입의 최대값
-   
-//     double front_x = ego_x + L * cos(ego_yaw);  
-//     double front_y = ego_y + L * sin(ego_yaw);
-
-//     for (int i = 0; i < path.size(); i++)
-//     {
-//         dx = path[i].xx - front_x;
-//         dy = path[i].yy - front_y;
-//         dist = sqrt(dx * dx + dy * dy);
-
-//         if (dist < min_dist)
-//         {
-//             min_dist = dist;
-//             near_point = i;
-//         }
-//     }  
-//     return near_point;
-// }
 
 int find_nearpoint(const vector<Position_path>& path)
 {
@@ -103,13 +85,13 @@ int find_nearpoint(const vector<Position_path>& path)
     int near_point= last_near_point;
     double min_dist = DBL_MAX;
 
-    int start = max(0, last_near_point - 10);
-    int end   = min((int)path.size() - 1, last_near_point + 30);
-    
+    int start_point = max(0, last_near_point - 10);
+    int end_point   = min((int)path.size() - 1, last_near_point + 30);
+   
     double front_x = ego_x + L * cos(ego_yaw);  
     double front_y = ego_y + L * sin(ego_yaw);
 
-    for (int i = start; i <= end; i++)
+    for (int i = start_point; i <= end_point; i++)
     {
         dx = path[i].xx - front_x;
         dy = path[i].yy - front_y;
@@ -126,14 +108,13 @@ int find_nearpoint(const vector<Position_path>& path)
 }
 
 int find_ld_point(const vector<Position_path>& path, int near_point, double ld) //stanley에 ld 적용 >> ld와 가까운 거리에 있는 point 위치  
-{   
+{  
     double front_x = ego_x + L * cos(ego_yaw);  
     double front_y = ego_y + L * sin(ego_yaw);
 
     int ld_point = near_point;
 
     if (near_point >= path.size() - 2)return path.size() - 2;
-
 
     for (int i = near_point; i < path.size(); i++)
     {
@@ -175,6 +156,44 @@ double compute_stanley_ld(const vector<Position_path>& path, int ld_point)
     return delta + atan2(k * error_dist , current_speed);
 }
 
+//----------------------------------------------//
+//----------------속도 로직-----------------------//
+//----------------------------------------------//
+void compute_curvature(vector<Position_path>& path)
+{
+    for(int i =0; i<path.size()-2; i++)
+    {
+        double dx1 = path[i+1].xx - path[i].xx;
+        double dy1 = path[i+1].yy - path[i].yy;
+        double dx2 = path[i+2].xx - path[i+1].xx;
+        double dy2 = path[i+2].yy - path[i+1].yy;
+
+        double yaw1 = atan2(dy1, dx1);
+        double yaw2 = atan2(dy2, dx2);
+
+        double k = fabs(yaw2 - yaw1); //곡률
+        if (k > M_PI) k = 2*M_PI - k;
+        path[i+1].curvature = k;    
+    }
+
+    path[0].curvature = path[1].curvature;  //첫점의 곡률을 두번쨰 점의 곡률로!
+    path.back().curvature = path[path.size()-2].curvature; // path.back() : 마지막 점, 마지막점의 곡률은 계산이 안됨>>전전점으로  
+}
+
+void getMaxCurvature(const vector<Position_path>& path, int near_point, int ld_point, double& max_curvature) //참조로 값 변경 
+{
+    double max_kappa = 0.0;
+
+    int end_idx = min((int)path.size()-1, ld_point); //near~ldpoint까지의 점을 탐색  
+
+    for (int i = near_point; i <= end_idx; ++i)
+    {
+        if (path[i].curvature > max_kappa)
+            max_kappa = path[i].curvature; // ldpoint까지의 점중에서 가장 큰 곡률을 저장 
+    }
+    max_curvature = max_kappa;
+}
+
 void compute_stanley_control(const vector<Position_path>& path)
 {
     double lookahead_distance = get_look_ahead(current_speed);
@@ -184,60 +203,39 @@ void compute_stanley_control(const vector<Position_path>& path)
 
     steering_angle = compute_stanley_ld(path, ld_point);
 
-    cout << " Speed: " << current_speed<< endl
-          << " lookahead: "<<lookahead_distance<<endl
+    getMaxCurvature(path, near_point, ld_point, max_curvature);
+
+    cout  <<" lookahead : "<<lookahead_distance<<endl
           << " near_point : " << near_point<<endl
-          << " Steering: " << steering_angle<< endl<< endl;
+          << " max_curvature : "<<max_curvature <<endl<<endl;
 }
 
-void compute_pid(double current_speed,double target_speed,double& accel, double& brake){
+void compute_pid(double current_speed,double target_speed_pid,double& accel, double& brake)
+{ //참조>> 값의 변경을 위함, 별명, 복사x,함수 안에서 바뀐 값이 외부에 적용)
 
     static double prev_error = 0.0;    
-    double error = target_speed - current_speed;
 
+    double error = target_speed_pid - current_speed;
     double p_error = Kp*error;
     double d_error = Kd*((error - prev_error)/0.02); //50hz >> 0.02
     prev_error = error;
 
-    double pid_speed = p_error + d_error;
+    double pid = p_error + d_error;
 
-    if (pid_speed > 0) {
-        accel = min(pid_speed, 1.0); //min(a, b)는 a와 b 중에서 작은 값을 반환.
+    if (pid > 0) { //가속
+        accel = min(pid, 1.0); //min(a, b)는 a와 b 중에서 작은 값을 반환.
         brake = 0.0;
     }
-    else {
+    else { //감속
         accel = 0.0;
-        brake = min(-pid_speed, 1.0);
+        brake = min(-pid, 1.0); //current: 16 target: 14 >>>>>>>>>  pid speed<0 감속 진행 음수>양수 브레이크 값 사용 가능    
     }
 }
 
-void compute_curvature(vector<Position_path>& path)
-{
-    for(int i =0; i<path.size()-2; i++)
-{
-    double dx1 = path[i+1].xx - path[i].xx;
-    double dy1 = path[i+1].yy - path[i].yy;
-    double dx2 = path[i+2].xx - path[i+1].xx;
-    double dy2 = path[i+2].yy - path[i+1].yy;
-
-    double yaw1 = atan2(dy1, dx1);
-    double yaw2 = atan2(dy2, dx2);
-
-    double k = fabs(yaw2 - yaw1);
-    if (k > M_PI) k = 2*M_PI - k;
-    path[i+1].curvature = k;    
-}
-    path[0].curvature = path[1].curvature;
-    
-    path.back().curvature = path[path.size()-2].curvature;
-}
-
-bool publish_stop_ctrlcmd(const vector<Position_path>& path, ros::Publisher& ctrl_pub) {
-    if (path.empty()) return false;
+bool publish_stop_ctrlcmd(const vector<Position_path>& path,ros::Publisher& ctrl_pub) {
     double dx = path.back().xx - ego_x;
     double dy = path.back().yy - ego_y;
     double dist = sqrt(dx*dx + dy*dy);
-    cout<< "stop point = "<< dist<<endl;
 
     if (dist < 1.0) {
         morai_msgs::CtrlCmd stop_cmd;
@@ -247,8 +245,6 @@ bool publish_stop_ctrlcmd(const vector<Position_path>& path, ros::Publisher& ctr
         stop_cmd.accel = 0.0;
         stop_cmd.brake = 1.0;
         ctrl_pub.publish(stop_cmd);
-        cout << "Reached goal.";
-        ros::shutdown();
         return true;
     }
     return false;
@@ -284,8 +280,12 @@ int main(int argc, char **argv)
     {
         ros::spinOnce();
         compute_stanley_control(path);
-        // compute_pid(current_speed,target_speed,accel,brake);
-        publish_stop_ctrlcmd(path, ctrl_pub);
+
+        double target_speed_pid = target_speed;
+        if (max_curvature > curve_standard)target_speed_pid = min_speed;
+
+        compute_pid(current_speed,target_speed_pid,accel,brake);
+        if (publish_stop_ctrlcmd(path, ctrl_pub))break;
         publish_ctrlcmd(ctrl_pub);
         rate.sleep();
     }
@@ -294,12 +294,12 @@ int main(int argc, char **argv)
 
 // double compute_curvature(const vector<Position_path>& path, int near_point)
 // {
-//     if (near_point + 7 >= path.size()) return 0.0;
+//    
 
-//     double x1 = path[near_point+3].xx, y1 = path[near_point+3].yy;
-//     double x2 = path[near_point+5].xx, y2 = path[near_point+5].yy;
-//     double x3 = path[near_point+7].xx, y3 = path[near_point+7].yy;
-//    //
+//     double x1 = path[near_point+1].xx, y1 = path[near_point+1].yy;
+//     double x2 = path[near_point+2].xx, y2 = path[near_point+2].yy;
+//     double x3 = path[near_point+3].xx, y3 = path[near_point+3].yy;
+//    
 //     double a = sqrt((x2-x1)*(x2-x1) + (y2-y1)*(y2-y1));
 //     double b = sqrt((x3-x2)*(x3-x2) + (y3-y2)*(y3-y2));
 //     double c = sqrt((x3-x1)*(x3-x1) + (y3-y1)*(y3-y1));
@@ -311,5 +311,5 @@ int main(int argc, char **argv)
 //     //넓이 A는 외적공식을 활용
 //     //2>>4로 변경하는것이 일반적(값의 증폭,민감도향상을 위해서)
 // }
-
+//>>계산량이 많아 복잡, 느릴수 있음
 
